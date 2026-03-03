@@ -12,6 +12,100 @@ def runner():
     return CliRunner()
 
 
+class TestSignup:
+    def test_signup_sends_email(self, runner):
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.signup = AsyncMock(return_value={})
+
+            result = runner.invoke(cli, ["signup", "--email", "test@example.com"])
+
+            assert result.exit_code == 0, result.output
+            assert "Verification email sent to test@example.com" in result.output
+            assert "Check your inbox" in result.output
+            instance.signup.assert_called_once_with("test@example.com")
+
+    def test_signup_with_custom_api_url(self, runner):
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.signup = AsyncMock(return_value={})
+
+            result = runner.invoke(cli, [
+                "signup", "--email", "test@example.com",
+                "--api-url", "https://custom.api.com",
+            ])
+
+            assert result.exit_code == 0, result.output
+            MockClient.assert_called_once_with(agent_id="", private_key="", api_url="https://custom.api.com")
+
+    def test_signup_requires_email(self, runner):
+        result = runner.invoke(cli, ["signup"])
+        assert result.exit_code != 0
+        assert "Missing option" in result.output or "required" in result.output.lower()
+
+
+class TestLogin:
+    def test_login_saves_config(self, runner):
+        from nacl.signing import SigningKey
+        from nacl.encoding import HexEncoder
+
+        sk = SigningKey.generate()
+        private_key = sk.encode(encoder=HexEncoder).decode()
+        public_key = sk.verify_key.encode(encoder=HexEncoder).decode()
+
+        agent_data = {"agent_id": "agent-abc", "display_name": "TestBot", "public_key": public_key}
+
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.get_agent = AsyncMock(return_value=agent_data)
+
+            with patch("arcoa.cli.save_config") as mock_save:
+                result = runner.invoke(cli, [
+                    "login",
+                    "--agent-id", "agent-abc",
+                    "--private-key", private_key,
+                ])
+
+                assert result.exit_code == 0, result.output
+                assert "Logged in as TestBot" in result.output
+                assert "Config saved" in result.output
+
+                mock_save.assert_called_once()
+                saved = mock_save.call_args[0][0]
+                assert saved["agent_id"] == "agent-abc"
+                assert saved["private_key"] == private_key
+                assert saved["public_key"] == public_key
+                assert saved["display_name"] == "TestBot"
+
+    def test_login_invalid_private_key(self, runner):
+        result = runner.invoke(cli, [
+            "login",
+            "--agent-id", "agent-abc",
+            "--private-key", "not-a-valid-hex-key",
+        ])
+        assert result.exit_code != 0
+        assert "Invalid private key" in result.output
+
+    def test_login_agent_not_found(self, runner):
+        from nacl.signing import SigningKey
+        from nacl.encoding import HexEncoder
+
+        sk = SigningKey.generate()
+        private_key = sk.encode(encoder=HexEncoder).decode()
+
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.get_agent = AsyncMock(side_effect=Exception("404: Agent not found"))
+
+            result = runner.invoke(cli, [
+                "login",
+                "--agent-id", "nonexistent",
+                "--private-key", private_key,
+            ])
+            assert result.exit_code != 0
+            assert "Could not validate agent" in result.output
+
+
 class TestInit:
     def test_init_registers_and_saves_config(self, runner, tmp_path):
         config_path = tmp_path / "config.json"

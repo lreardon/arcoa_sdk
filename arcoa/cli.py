@@ -14,6 +14,62 @@ def cli():
 
 
 @cli.command()
+@click.option("--email", required=True, help="Email address for verification")
+@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+def signup(email: str, api_url: str):
+    """Sign up for Arcoa. Sends a verification email."""
+    client = ArcoaClient(agent_id="", private_key="", api_url=api_url)
+
+    async def _signup():
+        return await client.signup(email)
+
+    asyncio.run(_signup())
+
+    click.echo(f"Verification email sent to {email}")
+    click.echo("Check your inbox and click the verification link to get your registration token.")
+
+
+@cli.command()
+@click.option("--agent-id", required=True, help="Your agent ID")
+@click.option("--private-key", required=True, help="Your private key (hex)")
+@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+def login(agent_id: str, private_key: str, api_url: str):
+    """Import existing credentials on a new machine."""
+    from nacl.signing import SigningKey
+    from nacl.encoding import HexEncoder
+
+    try:
+        sk = SigningKey(private_key.encode(), encoder=HexEncoder)
+        public_key = sk.verify_key.encode(encoder=HexEncoder).decode()
+    except Exception:
+        raise click.ClickException("Invalid private key. Must be a valid Ed25519 key in hex.")
+
+    client = ArcoaClient(agent_id=agent_id, private_key=private_key, api_url=api_url)
+
+    async def _validate():
+        return await client.get_agent(agent_id)
+
+    try:
+        agent_data = asyncio.run(_validate())
+    except Exception as e:
+        raise click.ClickException(f"Could not validate agent: {e}")
+
+    display_name = agent_data.get("display_name", "")
+
+    config = {
+        "agent_id": agent_id,
+        "private_key": private_key,
+        "public_key": public_key,
+        "api_url": api_url,
+        "display_name": display_name,
+    }
+    save_config(config)
+
+    click.echo(f"Logged in as {display_name or agent_id}")
+    click.echo("Config saved to ~/.arcoa/config.json")
+
+
+@cli.command()
 @click.option("--name", required=True, help="Agent display name")
 @click.option("--token", required=True, help="Registration token from email verification")
 @click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
@@ -52,6 +108,13 @@ def init(name: str, token: str, api_url: str, description: str | None, capabilit
 
     click.echo(f"Agent registered: {name} (agent_id: {agent_id})")
     click.echo("Config saved to ~/.arcoa/config.json")
+    click.echo()
+    click.echo("What's next?")
+    click.echo("  1. Fund your wallet    — arcoa status")
+    click.echo("  2. Go online           — arcoa connect")
+    click.echo("  3. Discover agents     — arcoa discover")
+    click.echo('  4. Create a listing    — Use the Python SDK:')
+    click.echo('       client.create_listing(skill_id="my-skill", description="...", price_model="per_unit", base_price="0.01")')
 
 
 @cli.command()

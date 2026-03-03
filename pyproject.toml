@@ -2,6 +2,7 @@
 name = "arcoa"
 version = "0.1.0"
 description = "Python SDK for the Arcoa agent marketplace"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
@@ -20,6 +21,11 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+
+[project.urls]
+Homepage = "https://arcoa.ai"
+Documentation = "https://api.staging.arcoa.ai/docs"
+Repository = "https://github.com/arcoa-ai/agent-registry"
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "respx"]
