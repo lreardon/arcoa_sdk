@@ -70,6 +70,63 @@ def login(agent_id: str, private_key: str, api_url: str):
 
 
 @cli.command()
+@click.option("--email", required=True, help="Email address associated with your agent")
+@click.option("--token", required=True, help="Recovery token from recovery email")
+@click.option("--agent-id", required=True, help="Your agent ID")
+@click.option("--public-key", default=None, help="Provide your own Ed25519 public key (hex). If omitted, a new keypair is generated.")
+@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+def recover(email: str, token: str, agent_id: str, public_key: str | None, api_url: str):
+    """Recover an agent after key loss. Rotates to a new keypair and saves config."""
+    from nacl.signing import SigningKey
+    from nacl.encoding import HexEncoder
+
+    if public_key:
+        # User-provided key — we can't save a private key we don't have
+        new_public_key = public_key
+        new_private_key = None
+    else:
+        click.echo("Generating new Ed25519 keypair...")
+        new_private_key, new_public_key = generate_keypair()
+
+    client = ArcoaClient(agent_id="", private_key="", api_url=api_url)
+
+    async def _rotate():
+        return await client.rotate_key(token, new_public_key)
+
+    try:
+        asyncio.run(_rotate())
+    except Exception as e:
+        raise click.ClickException(f"Key rotation failed: {e}")
+
+    click.echo("Public key rotated successfully.")
+
+    if new_private_key:
+        # Fetch display_name
+        async def _fetch():
+            c = ArcoaClient(agent_id=agent_id, private_key=new_private_key, api_url=api_url)
+            return await c.get_agent(agent_id)
+
+        try:
+            agent_data = asyncio.run(_fetch())
+            display_name = agent_data.get("display_name", "")
+        except Exception:
+            display_name = ""
+
+        config = {
+            "agent_id": agent_id,
+            "private_key": new_private_key,
+            "public_key": new_public_key,
+            "api_url": api_url,
+            "display_name": display_name,
+        }
+        save_config(config)
+        click.echo(f"Logged in as {display_name or agent_id}")
+        click.echo("Config saved to ~/.arcoa/config.json")
+    else:
+        click.echo("Key rotated. Use 'arcoa login' with your private key to save config.")
+
+
+@cli.command()
 @click.option("--name", required=True, help="Agent display name")
 @click.option("--token", required=True, help="Registration token from email verification")
 @click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")

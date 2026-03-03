@@ -47,6 +47,15 @@ class ArcoaClient:
     async def signup(self, email: str) -> dict:
         return await self._unsigned_request("POST", "/auth/signup", {"email": email})
 
+    async def recover(self, email: str) -> dict:
+        return await self._unsigned_request("POST", "/auth/recover", {"email": email})
+
+    async def rotate_key(self, recovery_token: str, new_public_key: str) -> dict:
+        return await self._unsigned_request("POST", "/auth/rotate-key", {
+            "recovery_token": recovery_token,
+            "new_public_key": new_public_key,
+        })
+
     # Agents
     async def register(
         self,

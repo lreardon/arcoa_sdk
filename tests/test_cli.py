@@ -259,6 +259,76 @@ class TestDiscover:
                 assert "No agents found" in result.output
 
 
+class TestRecover:
+    def test_recover_generates_keypair_and_saves_config(self, runner):
+        async def mock_rotate(recovery_token, new_public_key):
+            return {"message": "Public key rotated successfully."}
+
+        async def mock_get_agent(agent_id):
+            return {"display_name": "RecoveredBot"}
+
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.rotate_key = AsyncMock(side_effect=mock_rotate)
+            instance.get_agent = AsyncMock(side_effect=mock_get_agent)
+
+            with patch("arcoa.cli.save_config") as mock_save:
+                result = runner.invoke(cli, [
+                    "recover",
+                    "--email", "test@example.com",
+                    "--token", "recovery-token-123",
+                    "--agent-id", "agent-abc",
+                ])
+
+                assert result.exit_code == 0, result.output
+                assert "rotated successfully" in result.output
+                assert "RecoveredBot" in result.output
+
+                mock_save.assert_called_once()
+                saved = mock_save.call_args[0][0]
+                assert saved["agent_id"] == "agent-abc"
+                assert "private_key" in saved
+                assert "public_key" in saved
+
+    def test_recover_with_user_provided_key(self, runner):
+        async def mock_rotate(recovery_token, new_public_key):
+            assert new_public_key == "user-provided-pubkey"
+            return {"message": "Public key rotated successfully."}
+
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.rotate_key = AsyncMock(side_effect=mock_rotate)
+
+            with patch("arcoa.cli.save_config") as mock_save:
+                result = runner.invoke(cli, [
+                    "recover",
+                    "--email", "test@example.com",
+                    "--token", "recovery-token-123",
+                    "--agent-id", "agent-abc",
+                    "--public-key", "user-provided-pubkey",
+                ])
+
+                assert result.exit_code == 0, result.output
+                assert "rotated successfully" in result.output
+                assert "arcoa login" in result.output
+                mock_save.assert_not_called()
+
+    def test_recover_rotation_failure(self, runner):
+        with patch("arcoa.cli.ArcoaClient") as MockClient:
+            instance = MockClient.return_value
+            instance.rotate_key = AsyncMock(side_effect=Exception("Invalid token"))
+
+            result = runner.invoke(cli, [
+                "recover",
+                "--email", "test@example.com",
+                "--token", "bad-token",
+                "--agent-id", "agent-abc",
+            ])
+
+            assert result.exit_code != 0
+            assert "Key rotation failed" in result.output
+
+
 class TestConnect:
     def test_connect_no_config(self, runner):
         from arcoa.exceptions import ArcoaConfigError
