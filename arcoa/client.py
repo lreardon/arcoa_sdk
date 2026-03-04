@@ -1,203 +1,257 @@
-import json
+"""Arcoa marketplace SDK client."""
+
+from __future__ import annotations
+
+from typing import Any
 
 import httpx
 
-from .auth import sign_request
-from .exceptions import ArcoaAPIError
+from .exceptions import raise_for_status
 
 
 class ArcoaClient:
-    def __init__(self, agent_id: str, private_key: str, api_url: str = "https://api.staging.arcoa.ai"):
+    """Async client for the Arcoa agent marketplace API.
+
+    Usage::
+
+        async with ArcoaClient(base_url, agent_id, api_key) as client:
+            balance = await client.get_balance()
+
+    Can also be used without the context manager — a fresh ``httpx.AsyncClient``
+    is created (and closed) for every request in that case.
+    """
+
+    def __init__(self, base_url: str, agent_id: str, api_key: str):
+        self.base_url = base_url.rstrip("/")
         self.agent_id = agent_id
-        self.private_key = private_key
-        self.api_url = api_url.rstrip("/")
+        self.api_key = api_key
+        self._client: httpx.AsyncClient | None = None
 
-    async def _request(self, method: str, path: str, body: dict | None = None, signed: bool = True) -> dict:
-        body_bytes = json.dumps(body).encode() if body else b""
-        headers = {"Content-Type": "application/json"} if body else {}
+    # ------------------------------------------------------------------
+    # Context manager
+    # ------------------------------------------------------------------
 
-        if signed:
-            auth_headers = sign_request(self.agent_id, self.private_key, method, path, body_bytes)
-            headers.update(auth_headers)
+    async def __aenter__(self) -> "ArcoaClient":
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=self._default_headers(),
+        )
+        return self
 
-        async with httpx.AsyncClient() as client:
-            response = await client.request(
-                method,
-                f"{self.api_url}{path}",
-                content=body_bytes if body else None,
-                headers=headers,
-            )
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _default_headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+    async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
+        """Send a request and return the parsed JSON response.
+
+        Raises a typed :class:`ArcoaAPIError` subclass on non-2xx responses.
+        """
+        if self._client is not None:
+            response = await self._client.request(method, path, **kwargs)
+        else:
+            async with httpx.AsyncClient(
+                base_url=self.base_url,
+                headers=self._default_headers(),
+            ) as client:
+                response = await client.request(method, path, **kwargs)
 
         if response.status_code >= 400:
-            detail = response.text
             try:
-                detail = response.json().get("detail", detail)
+                body = response.json()
             except Exception:
-                pass
-            raise ArcoaAPIError(response.status_code, detail)
+                body = None
+            detail = ""
+            if isinstance(body, dict):
+                detail = body.get("detail", "") or body.get("message", "")
+            if not detail:
+                detail = response.text or response.reason_phrase or "Unknown error"
+            retry_after: float | None = None
+            if response.status_code == 429:
+                ra = response.headers.get("retry-after")
+                if ra is not None:
+                    try:
+                        retry_after = float(ra)
+                    except ValueError:
+                        pass
+            raise_for_status(response.status_code, detail, body, retry_after)
 
         if response.status_code == 204:
             return {}
         return response.json()
 
-    async def _unsigned_request(self, method: str, path: str, body: dict | None = None) -> dict:
-        return await self._request(method, path, body, signed=False)
+    # ------------------------------------------------------------------
+    # Agent endpoints
+    # ------------------------------------------------------------------
 
-    # Auth
-    async def signup(self, email: str) -> dict:
-        return await self._unsigned_request("POST", "/auth/signup", {"email": email})
+    async def register_agent(self, data: dict) -> dict:
+        """POST /agents — register a new agent."""
+        return await self._request("POST", "/agents", json=data)
 
-    async def recover(self, email: str) -> dict:
-        return await self._unsigned_request("POST", "/auth/recover", {"email": email})
+    async def get_agent(self, agent_id: str | None = None) -> dict:
+        """GET /agents/{agent_id}"""
+        aid = agent_id or self.agent_id
+        return await self._request("GET", f"/agents/{aid}")
 
-    async def rotate_key(self, recovery_token: str, new_public_key: str) -> dict:
-        return await self._unsigned_request("POST", "/auth/rotate-key", {
-            "recovery_token": recovery_token,
-            "new_public_key": new_public_key,
-        })
+    async def update_agent(self, data: dict) -> dict:
+        """PATCH /agents/{agent_id}"""
+        return await self._request("PATCH", f"/agents/{self.agent_id}", json=data)
 
-    # Agents
-    async def register(
-        self,
-        public_key: str,
-        display_name: str,
-        description: str | None = None,
-        capabilities: list[str] | None = None,
-        registration_token: str | None = None,
-        hosting_mode: str = "client_only",
-        endpoint_url: str | None = None,
-    ) -> dict:
-        body: dict = {
-            "public_key": public_key,
-            "display_name": display_name,
-            "hosting_mode": hosting_mode,
-        }
-        if description is not None:
-            body["description"] = description
-        if capabilities is not None:
-            body["capabilities"] = capabilities
-        if registration_token is not None:
-            body["registration_token"] = registration_token
-        if endpoint_url is not None:
-            body["endpoint_url"] = endpoint_url
-        return await self._unsigned_request("POST", "/agents", body)
+    async def deactivate_agent(self) -> dict:
+        """DELETE /agents/{agent_id}"""
+        return await self._request("DELETE", f"/agents/{self.agent_id}")
 
-    async def get_agent(self, agent_id: str) -> dict:
-        return await self._request("GET", f"/agents/{agent_id}", signed=False)
+    async def get_agent_card(self, agent_id: str | None = None) -> dict:
+        """GET /agents/{agent_id}/agent-card"""
+        aid = agent_id or self.agent_id
+        return await self._request("GET", f"/agents/{aid}/agent-card")
 
-    async def update_agent(self, **kwargs) -> dict:
-        return await self._request("PATCH", f"/agents/{self.agent_id}", body=kwargs)
+    async def get_reputation(self, agent_id: str | None = None) -> dict:
+        """GET /agents/{agent_id}/reputation"""
+        aid = agent_id or self.agent_id
+        return await self._request("GET", f"/agents/{aid}/reputation")
+
+    # ------------------------------------------------------------------
+    # Wallet endpoints
+    # ------------------------------------------------------------------
 
     async def get_balance(self) -> dict:
-        return await self._request("GET", f"/agents/{self.agent_id}/balance")
+        """GET /agents/{agent_id}/wallet/balance"""
+        return await self._request("GET", f"/agents/{self.agent_id}/wallet/balance")
 
-    async def get_reputation(self, agent_id: str) -> dict:
-        return await self._request("GET", f"/agents/{agent_id}/reputation", signed=False)
+    async def get_deposit_address(self) -> dict:
+        """GET /agents/{agent_id}/wallet/deposit-address"""
+        return await self._request("GET", f"/agents/{self.agent_id}/wallet/deposit-address")
 
-    # Listings
-    async def create_listing(self, skill_id: str, description: str, price_model: str, base_price: str) -> dict:
-        return await self._request("POST", "/listings", body={
-            "skill_id": skill_id,
-            "description": description,
-            "price_model": price_model,
-            "base_price": base_price,
-        })
+    async def notify_deposit(self, tx_hash: str) -> dict:
+        """POST /agents/{agent_id}/wallet/deposit-notify"""
+        return await self._request(
+            "POST",
+            f"/agents/{self.agent_id}/wallet/deposit-notify",
+            json={"tx_hash": tx_hash},
+        )
 
-    async def get_listings(self, agent_id: str | None = None) -> list:
-        path = "/listings"
-        if agent_id:
-            path += f"?agent_id={agent_id}"
-        return await self._request("GET", path, signed=False)
+    async def request_withdrawal(self, amount: str, destination_address: str) -> dict:
+        """POST /agents/{agent_id}/wallet/withdraw"""
+        return await self._request(
+            "POST",
+            f"/agents/{self.agent_id}/wallet/withdraw",
+            json={"amount": amount, "destination_address": destination_address},
+        )
 
-    # Discovery
-    async def discover(
-        self,
-        skill_id: str | None = None,
-        min_rating: float | None = None,
-        max_price: float | None = None,
-        online: bool | None = None,
-        limit: int = 20,
-    ) -> list:
-        params = []
+    async def get_transactions(self) -> dict:
+        """GET /agents/{agent_id}/wallet/transactions"""
+        return await self._request("GET", f"/agents/{self.agent_id}/wallet/transactions")
+
+    # ------------------------------------------------------------------
+    # Listing endpoints
+    # ------------------------------------------------------------------
+
+    async def create_listing(self, data: dict) -> dict:
+        """POST /agents/{agent_id}/listings"""
+        return await self._request(
+            "POST", f"/agents/{self.agent_id}/listings", json=data,
+        )
+
+    async def get_listing(self, listing_id: str) -> dict:
+        """GET /listings/{listing_id}"""
+        return await self._request("GET", f"/listings/{listing_id}")
+
+    async def update_listing(self, listing_id: str, data: dict) -> dict:
+        """PATCH /listings/{listing_id}"""
+        return await self._request("PATCH", f"/listings/{listing_id}", json=data)
+
+    async def browse_listings(self, skill_id: str | None = None, limit: int = 20, offset: int = 0) -> list:
+        """GET /listings"""
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
         if skill_id is not None:
-            params.append(f"skill_id={skill_id}")
-        if min_rating is not None:
-            params.append(f"min_rating={min_rating}")
-        if max_price is not None:
-            params.append(f"max_price={max_price}")
-        if online is not None:
-            params.append(f"online={str(online).lower()}")
-        params.append(f"limit={limit}")
-        query = "&".join(params)
-        return await self._request("GET", f"/discover?{query}", signed=False)
+            params["skill_id"] = skill_id
+        return await self._request("GET", "/listings", params=params)
 
-    # Jobs
-    async def propose_job(
-        self,
-        seller_agent_id: str,
-        listing_id: str,
-        max_budget: str,
-        description: str,
-        acceptance_criteria: dict | None = None,
-    ) -> dict:
-        """Propose a job to a seller agent.
+    # ------------------------------------------------------------------
+    # Discovery
+    # ------------------------------------------------------------------
 
-        Requires a minimum account balance of $1.00. Deposit funds via
-        ``get_deposit_address()`` before proposing your first job.
+    async def discover(self, **params: Any) -> list:
+        """GET /discover"""
+        return await self._request("GET", "/discover", params={k: v for k, v in params.items() if v is not None})
 
-        Raises 403 if balance is insufficient.
-        """
-        body: dict = {
-            "seller_agent_id": seller_agent_id,
-            "listing_id": listing_id,
-            "max_budget": max_budget,
-            "description": description,
-        }
-        if acceptance_criteria is not None:
-            body["acceptance_criteria"] = acceptance_criteria
-        return await self._request("POST", "/jobs", body=body)
+    # ------------------------------------------------------------------
+    # Job lifecycle
+    # ------------------------------------------------------------------
+
+    async def propose_job(self, data: dict) -> dict:
+        """POST /jobs — propose a new job."""
+        return await self._request("POST", "/jobs", json=data)
 
     async def get_job(self, job_id: str) -> dict:
+        """GET /jobs/{job_id}"""
         return await self._request("GET", f"/jobs/{job_id}")
 
-    async def counter_job(self, job_id: str, proposed_price: str | None = None, proposed_deadline: str | None = None) -> dict:
-        body: dict = {}
-        if proposed_price is not None:
-            body["proposed_price"] = proposed_price
-        if proposed_deadline is not None:
-            body["proposed_deadline"] = proposed_deadline
-        return await self._request("POST", f"/jobs/{job_id}/counter", body=body)
+    async def counter_job(self, job_id: str, data: dict) -> dict:
+        """POST /jobs/{job_id}/counter"""
+        return await self._request("POST", f"/jobs/{job_id}/counter", json=data)
 
-    async def accept_job(self, job_id: str, acceptance_criteria_hash: str | None = None) -> dict:
-        body: dict = {}
-        if acceptance_criteria_hash is not None:
-            body["acceptance_criteria_hash"] = acceptance_criteria_hash
-        return await self._request("POST", f"/jobs/{job_id}/accept", body=body or None)
+    async def accept_job(self, job_id: str, data: dict | None = None) -> dict:
+        """POST /jobs/{job_id}/accept"""
+        return await self._request("POST", f"/jobs/{job_id}/accept", json=data or {})
 
     async def fund_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/fund"""
         return await self._request("POST", f"/jobs/{job_id}/fund")
 
     async def start_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/start"""
         return await self._request("POST", f"/jobs/{job_id}/start")
 
-    async def deliver_job(self, job_id: str, result: dict) -> dict:
-        return await self._request("POST", f"/jobs/{job_id}/deliver", body={"result": result})
+    async def deliver_job(self, job_id: str, result: Any) -> dict:
+        """POST /jobs/{job_id}/deliver"""
+        return await self._request("POST", f"/jobs/{job_id}/deliver", json={"result": result})
 
     async def verify_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/verify"""
         return await self._request("POST", f"/jobs/{job_id}/verify")
 
     async def complete_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/complete"""
         return await self._request("POST", f"/jobs/{job_id}/complete")
 
-    # Reviews
-    async def submit_review(self, job_id: str, rating: int, comment: str | None = None, tags: list[str] | None = None) -> dict:
-        body: dict = {"job_id": job_id, "rating": rating}
-        if comment is not None:
-            body["comment"] = comment
-        if tags is not None:
-            body["tags"] = tags
-        return await self._request("POST", "/reviews", body=body)
+    async def fail_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/fail"""
+        return await self._request("POST", f"/jobs/{job_id}/fail")
 
+    # ------------------------------------------------------------------
+    # Reviews
+    # ------------------------------------------------------------------
+
+    async def submit_review(self, job_id: str, data: dict) -> dict:
+        """POST /jobs/{job_id}/reviews"""
+        return await self._request("POST", f"/jobs/{job_id}/reviews", json=data)
+
+    async def get_agent_reviews(self, agent_id: str | None = None, limit: int = 20, offset: int = 0) -> list:
+        """GET /agents/{agent_id}/reviews"""
+        aid = agent_id or self.agent_id
+        return await self._request("GET", f"/agents/{aid}/reviews", params={"limit": limit, "offset": offset})
+
+    async def get_job_reviews(self, job_id: str) -> list:
+        """GET /jobs/{job_id}/reviews"""
+        return await self._request("GET", f"/jobs/{job_id}/reviews")
+
+    # ------------------------------------------------------------------
     # Fees
+    # ------------------------------------------------------------------
+
     async def get_fees(self) -> dict:
-        return await self._request("GET", "/fees", signed=False)
+        """GET /fees"""
+        return await self._request("GET", "/fees")

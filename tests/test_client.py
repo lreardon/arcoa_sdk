@@ -1,204 +1,228 @@
-import json
-import pytest
+"""Tests for ArcoaClient — wallet methods, context manager, error handling."""
+
 import httpx
+import pytest
 import respx
 
-from arcoa.auth import generate_keypair
-from arcoa.client import ArcoaClient
-from arcoa.exceptions import ArcoaAPIError
+from arcoa import ArcoaClient
+from arcoa.exceptions import (
+    ArcoaAPIError,
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    RateLimitError,
+    ServerError,
+    ValidationError,
+)
 
-AGENT_ID = "test-agent-id"
-API_URL = "https://api.staging.arcoa.ai"
-
-
-@pytest.fixture
-def keys():
-    return generate_keypair()
-
-
-@pytest.fixture
-def client(keys):
-    return ArcoaClient(AGENT_ID, keys[0], API_URL)
+BASE = "https://api.arcoa.test"
+AGENT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+API_KEY = "test-key-123"
 
 
-class TestUnsignedRequests:
+def _client() -> ArcoaClient:
+    return ArcoaClient(BASE, AGENT_ID, API_KEY)
+
+
+# --------------------------------------------------------------------------
+# Context manager
+# --------------------------------------------------------------------------
+
+
+class TestContextManager:
     @respx.mock
-    async def test_signup(self, client):
-        respx.post(f"{API_URL}/auth/signup").mock(
-            return_value=httpx.Response(200, json={"message": "ok", "token": "abc"})
-        )
-        result = await client.signup("test@example.com")
-        assert result["token"] == "abc"
-
-    @respx.mock
-    async def test_register(self, client):
-        respx.post(f"{API_URL}/agents").mock(
-            return_value=httpx.Response(200, json={"agent_id": "new-id", "display_name": "Bot"})
-        )
-        result = await client.register(
-            public_key="deadbeef",
-            display_name="Bot",
-            registration_token="tok",
-        )
-        assert result["agent_id"] == "new-id"
+    async def test_async_context_manager(self):
+        route = respx.get(f"{BASE}/fees").mock(return_value=httpx.Response(200, json={"base": "1%"}))
+        async with _client() as c:
+            result = await c.get_fees()
+            assert result == {"base": "1%"}
+        assert route.called
 
     @respx.mock
-    async def test_register_no_auth_header(self, client):
-        route = respx.post(f"{API_URL}/agents").mock(
-            return_value=httpx.Response(200, json={"agent_id": "x"})
-        )
-        await client.register(public_key="ab", display_name="B")
-        request = route.calls[0].request
-        assert "Authorization" not in request.headers
+    async def test_reuses_connection(self):
+        """Inside `async with`, the same httpx.AsyncClient is reused."""
+        respx.get(f"{BASE}/fees").mock(return_value=httpx.Response(200, json={}))
+        async with _client() as c:
+            assert c._client is not None
+            first_client = c._client
+            await c.get_fees()
+            await c.get_fees()
+            assert c._client is first_client
+        assert c._client is None  # closed
 
     @respx.mock
-    async def test_get_agent(self, client):
-        respx.get(f"{API_URL}/agents/some-id").mock(
-            return_value=httpx.Response(200, json={"agent_id": "some-id", "display_name": "X"})
-        )
-        result = await client.get_agent("some-id")
-        assert result["agent_id"] == "some-id"
+    async def test_without_context_manager(self):
+        respx.get(f"{BASE}/fees").mock(return_value=httpx.Response(200, json={"ok": True}))
+        c = _client()
+        result = await c.get_fees()
+        assert result == {"ok": True}
+        assert c._client is None  # never assigned
 
+
+# --------------------------------------------------------------------------
+# Wallet methods
+# --------------------------------------------------------------------------
+
+
+class TestWalletMethods:
     @respx.mock
-    async def test_get_reputation(self, client):
-        respx.get(f"{API_URL}/agents/some-id/reputation").mock(
-            return_value=httpx.Response(200, json={"seller_rating": 4.5})
+    async def test_get_balance(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/wallet/balance").mock(
+            return_value=httpx.Response(200, json={"balance": "100.00", "available_balance": "90.00", "pending_withdrawals": "10.00"}),
         )
-        result = await client.get_reputation("some-id")
-        assert result["seller_rating"] == 4.5
-
-    @respx.mock
-    async def test_get_fees(self, client):
-        respx.get(f"{API_URL}/fees").mock(
-            return_value=httpx.Response(200, json={"platform_fee_percent": 5.0})
-        )
-        result = await client.get_fees()
-        assert result["platform_fee_percent"] == 5.0
-
-    @respx.mock
-    async def test_get_listings(self, client):
-        respx.get(f"{API_URL}/listings").mock(
-            return_value=httpx.Response(200, json=[{"listing_id": "l1"}])
-        )
-        result = await client.get_listings()
-        assert len(result) == 1
-
-    @respx.mock
-    async def test_discover(self, client):
-        respx.get(url__startswith=f"{API_URL}/discover").mock(
-            return_value=httpx.Response(200, json=[{"agent_id": "a1"}])
-        )
-        result = await client.discover(skill_id="pdf", online=True, limit=5)
-        assert len(result) == 1
-
-
-class TestSignedRequests:
-    @respx.mock
-    async def test_update_agent_sends_auth(self, client):
-        route = respx.patch(f"{API_URL}/agents/{AGENT_ID}").mock(
-            return_value=httpx.Response(200, json={"agent_id": AGENT_ID})
-        )
-        await client.update_agent(display_name="NewName")
-        request = route.calls[0].request
-        assert "Authorization" in request.headers
-        assert request.headers["Authorization"].startswith(f"AgentSig {AGENT_ID}:")
-        assert "X-Timestamp" in request.headers
-        assert "X-Nonce" in request.headers
-
-    @respx.mock
-    async def test_get_balance(self, client):
-        respx.get(f"{API_URL}/agents/{AGENT_ID}/balance").mock(
-            return_value=httpx.Response(200, json={"agent_id": AGENT_ID, "balance": "100.00"})
-        )
-        result = await client.get_balance()
+        result = await _client().get_balance()
         assert result["balance"] == "100.00"
 
     @respx.mock
-    async def test_create_listing(self, client):
-        respx.post(f"{API_URL}/listings").mock(
-            return_value=httpx.Response(200, json={"listing_id": "l1"})
+    async def test_get_deposit_address(self):
+        body = {"agent_id": AGENT_ID, "address": "0xabc", "network": "base_sepolia"}
+        respx.get(f"{BASE}/agents/{AGENT_ID}/wallet/deposit-address").mock(
+            return_value=httpx.Response(200, json=body),
         )
-        result = await client.create_listing("pdf", "Extract PDF", "per_unit", "0.05")
-        assert result["listing_id"] == "l1"
+        result = await _client().get_deposit_address()
+        assert result["address"] == "0xabc"
 
     @respx.mock
-    async def test_propose_job(self, client):
-        respx.post(f"{API_URL}/jobs").mock(
-            return_value=httpx.Response(200, json={"job_id": "j1", "status": "proposed"})
+    async def test_notify_deposit(self):
+        respx.post(f"{BASE}/agents/{AGENT_ID}/wallet/deposit-notify").mock(
+            return_value=httpx.Response(201, json={"status": "pending", "tx_hash": "0xdef"}),
         )
-        result = await client.propose_job("seller-1", "l1", "10.00", "Do the thing")
-        assert result["job_id"] == "j1"
+        result = await _client().notify_deposit("0xdef")
+        assert result["tx_hash"] == "0xdef"
 
     @respx.mock
-    async def test_get_job(self, client):
-        respx.get(f"{API_URL}/jobs/j1").mock(
-            return_value=httpx.Response(200, json={"job_id": "j1"})
+    async def test_request_withdrawal(self):
+        respx.post(f"{BASE}/agents/{AGENT_ID}/wallet/withdraw").mock(
+            return_value=httpx.Response(201, json={"status": "pending", "amount": "50.00"}),
         )
-        result = await client.get_job("j1")
-        assert result["job_id"] == "j1"
+        result = await _client().request_withdrawal("50.00", "0x123")
+        assert result["amount"] == "50.00"
 
     @respx.mock
-    async def test_job_lifecycle(self, client):
-        for action in ["accept", "fund", "start", "verify", "complete"]:
-            respx.post(f"{API_URL}/jobs/j1/{action}").mock(
-                return_value=httpx.Response(200, json={"job_id": "j1", "status": action})
-            )
+    async def test_get_transactions(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/wallet/transactions").mock(
+            return_value=httpx.Response(200, json={"deposits": [], "withdrawals": []}),
+        )
+        result = await _client().get_transactions()
+        assert "deposits" in result
 
-        assert (await client.accept_job("j1"))["status"] == "accept"
-        assert (await client.fund_job("j1"))["status"] == "fund"
-        assert (await client.start_job("j1"))["status"] == "start"
-        assert (await client.verify_job("j1"))["status"] == "verify"
-        assert (await client.complete_job("j1"))["status"] == "complete"
+
+# --------------------------------------------------------------------------
+# Job lifecycle methods
+# --------------------------------------------------------------------------
+
+
+class TestJobMethods:
+    @respx.mock
+    async def test_propose_job(self):
+        respx.post(f"{BASE}/jobs").mock(
+            return_value=httpx.Response(201, json={"job_id": "j1", "status": "proposed"}),
+        )
+        result = await _client().propose_job({"seller_agent_id": "s1", "requirements": "test"})
+        assert result["status"] == "proposed"
 
     @respx.mock
-    async def test_deliver_job(self, client):
-        respx.post(f"{API_URL}/jobs/j1/deliver").mock(
-            return_value=httpx.Response(200, json={"job_id": "j1", "status": "delivered"})
+    async def test_get_job(self):
+        respx.get(f"{BASE}/jobs/j1").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1"}),
         )
-        result = await client.deliver_job("j1", {"output": "data"})
-        assert result["status"] == "delivered"
+        assert (await _client().get_job("j1"))["job_id"] == "j1"
 
     @respx.mock
-    async def test_counter_job(self, client):
-        respx.post(f"{API_URL}/jobs/j1/counter").mock(
-            return_value=httpx.Response(200, json={"job_id": "j1"})
+    async def test_accept_and_fund(self):
+        respx.post(f"{BASE}/jobs/j1/accept").mock(
+            return_value=httpx.Response(200, json={"status": "agreed"}),
         )
-        result = await client.counter_job("j1", proposed_price="5.00")
-        assert result["job_id"] == "j1"
+        respx.post(f"{BASE}/jobs/j1/fund").mock(
+            return_value=httpx.Response(200, json={"status": "funded"}),
+        )
+        c = _client()
+        assert (await c.accept_job("j1"))["status"] == "agreed"
+        assert (await c.fund_job("j1"))["status"] == "funded"
 
     @respx.mock
-    async def test_submit_review(self, client):
-        respx.post(f"{API_URL}/reviews").mock(
-            return_value=httpx.Response(200, json={"review_id": "r1"})
+    async def test_deliver_and_verify(self):
+        respx.post(f"{BASE}/jobs/j1/deliver").mock(
+            return_value=httpx.Response(200, json={"status": "delivered"}),
         )
-        result = await client.submit_review("j1", 5, comment="Great")
-        assert result["review_id"] == "r1"
+        respx.post(f"{BASE}/jobs/j1/verify").mock(
+            return_value=httpx.Response(200, json={"status": "completed"}),
+        )
+        c = _client()
+        assert (await c.deliver_job("j1", {"output": "done"}))["status"] == "delivered"
+        assert (await c.verify_job("j1"))["status"] == "completed"
+
+
+# --------------------------------------------------------------------------
+# Error handling
+# --------------------------------------------------------------------------
 
 
 class TestErrorHandling:
     @respx.mock
-    async def test_4xx_error(self, client):
-        respx.get(f"{API_URL}/agents/bad-id").mock(
-            return_value=httpx.Response(404, json={"detail": "Not found"})
+    async def test_403_raises_forbidden(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/wallet/balance").mock(
+            return_value=httpx.Response(403, json={"detail": "Can only access own wallet"}),
         )
-        with pytest.raises(ArcoaAPIError) as exc_info:
-            await client.get_agent("bad-id")
-        assert exc_info.value.status_code == 404
-        assert "Not found" in exc_info.value.detail
+        with pytest.raises(ForbiddenError) as exc_info:
+            await _client().get_balance()
+        assert exc_info.value.status_code == 403
+        assert "own wallet" in exc_info.value.detail
 
     @respx.mock
-    async def test_5xx_error(self, client):
-        respx.get(f"{API_URL}/agents/{AGENT_ID}/balance").mock(
-            return_value=httpx.Response(500, text="Internal Server Error")
+    async def test_404_raises_not_found(self):
+        respx.get(f"{BASE}/jobs/missing").mock(
+            return_value=httpx.Response(404, json={"detail": "Job not found"}),
         )
-        with pytest.raises(ArcoaAPIError) as exc_info:
-            await client.get_balance()
-        assert exc_info.value.status_code == 500
+        with pytest.raises(NotFoundError):
+            await _client().get_job("missing")
 
     @respx.mock
-    async def test_204_returns_empty_dict(self, client):
-        respx.post(f"{API_URL}/jobs/j1/complete").mock(
-            return_value=httpx.Response(204)
+    async def test_409_raises_conflict(self):
+        respx.post(f"{BASE}/jobs/j1/fund").mock(
+            return_value=httpx.Response(409, json={"detail": "Already funded"}),
         )
-        result = await client.complete_job("j1")
+        with pytest.raises(ConflictError):
+            await _client().fund_job("j1")
+
+    @respx.mock
+    async def test_422_raises_validation(self):
+        respx.post(f"{BASE}/jobs").mock(
+            return_value=httpx.Response(422, json={"detail": "missing field"}),
+        )
+        with pytest.raises(ValidationError):
+            await _client().propose_job({})
+
+    @respx.mock
+    async def test_429_raises_rate_limit_with_retry_after(self):
+        respx.get(f"{BASE}/fees").mock(
+            return_value=httpx.Response(429, json={"detail": "rate limited"}, headers={"Retry-After": "30"}),
+        )
+        with pytest.raises(RateLimitError) as exc_info:
+            await _client().get_fees()
+        assert exc_info.value.retry_after == 30.0
+
+    @respx.mock
+    async def test_500_raises_server_error(self):
+        respx.get(f"{BASE}/fees").mock(
+            return_value=httpx.Response(500, json={"detail": "internal server error"}),
+        )
+        with pytest.raises(ServerError):
+            await _client().get_fees()
+
+    @respx.mock
+    async def test_204_returns_empty_dict(self):
+        respx.delete(f"{BASE}/agents/{AGENT_ID}").mock(
+            return_value=httpx.Response(204),
+        )
+        result = await _client().deactivate_agent()
         assert result == {}
+
+    @respx.mock
+    async def test_error_with_non_json_body(self):
+        respx.get(f"{BASE}/fees").mock(
+            return_value=httpx.Response(503, text="Service Unavailable"),
+        )
+        with pytest.raises(ServerError) as exc_info:
+            await _client().get_fees()
+        assert "Service Unavailable" in exc_info.value.detail
