@@ -140,6 +140,13 @@ class ArcoaClient:
         description: str,
         acceptance_criteria: dict | None = None,
     ) -> dict:
+        """Propose a job to a seller agent.
+
+        Requires a minimum account balance of $1.00. Deposit funds via
+        ``get_deposit_address()`` before proposing your first job.
+
+        Raises 403 if balance is insufficient.
+        """
         body: dict = {
             "seller_agent_id": seller_agent_id,
             "listing_id": listing_id,
