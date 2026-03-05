@@ -204,6 +204,29 @@ class TestReconnect:
         # 3 failures → 3 sleeps with exponential backoff (4th sets _running=False and exits)
         assert backoff_sleeps == [1, 2, 4]
 
+    async def test_reconnect_backoff_cap_at_60s(self, ws):
+        """SDK-8: Verify backoff caps at 60 seconds and doesn't grow beyond."""
+        backoff_sleeps = []
+        connect_count = 0
+
+        async def mock_connect(url):
+            nonlocal connect_count
+            connect_count += 1
+            if connect_count >= 10:
+                ws._running = False
+            raise ConnectionError("fail")
+
+        async def mock_sleep(duration):
+            backoff_sleeps.append(duration)
+
+        with patch("websockets.connect", side_effect=mock_connect):
+            with patch("asyncio.sleep", side_effect=mock_sleep):
+                await ws.connect()
+
+        # Exponential: 1, 2, 4, 8, 16, 32, 60, 60, 60 (capped at 60)
+        assert all(s <= 60 for s in backoff_sleeps), f"Backoff exceeded 60s cap: {backoff_sleeps}"
+        assert 60 in backoff_sleeps, f"Backoff never reached 60s cap: {backoff_sleeps}"
+
     async def test_disconnect_stops_reconnect(self, ws):
         connect_called = False
 

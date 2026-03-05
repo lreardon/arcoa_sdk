@@ -355,3 +355,213 @@ class TestAuthMethods:
         c = ArcoaClient(api_url=BASE)
         result = await c.rotate_key("tok-123", "newpubkey")
         assert "rotated" in result["message"]
+
+
+# --------------------------------------------------------------------------
+# SDK-1: Previously untested client methods
+# --------------------------------------------------------------------------
+
+
+class TestJobLifecycleMissing:
+    """counter_job, start_job, complete_job, fail_job."""
+
+    @respx.mock
+    async def test_counter_job(self):
+        respx.post(f"{BASE}/jobs/j1/counter").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1", "status": "proposed"}),
+        )
+        result = await _client().counter_job("j1", {"max_budget": "200.00"})
+        assert result["status"] == "proposed"
+
+    @respx.mock
+    async def test_start_job(self):
+        respx.post(f"{BASE}/jobs/j1/start").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1", "status": "in_progress"}),
+        )
+        result = await _client().start_job("j1")
+        assert result["status"] == "in_progress"
+
+    @respx.mock
+    async def test_complete_job(self):
+        respx.post(f"{BASE}/jobs/j1/complete").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1", "status": "completed"}),
+        )
+        result = await _client().complete_job("j1")
+        assert result["status"] == "completed"
+
+    @respx.mock
+    async def test_fail_job(self):
+        respx.post(f"{BASE}/jobs/j1/fail").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1", "status": "failed"}),
+        )
+        result = await _client().fail_job("j1")
+        assert result["status"] == "failed"
+
+
+class TestAgentMethodsMissing:
+    """update_agent, get_agent_card, register_agent, register."""
+
+    @respx.mock
+    async def test_update_agent(self):
+        respx.patch(f"{BASE}/agents/{AGENT_ID}").mock(
+            return_value=httpx.Response(200, json={"agent_id": AGENT_ID, "display_name": "Updated"}),
+        )
+        result = await _client().update_agent({"display_name": "Updated"})
+        assert result["display_name"] == "Updated"
+
+    @respx.mock
+    async def test_get_agent_card(self):
+        card = {"agent_id": AGENT_ID, "name": "TestBot", "skills": []}
+        respx.get(f"{BASE}/agents/{AGENT_ID}/agent-card").mock(
+            return_value=httpx.Response(200, json=card),
+        )
+        result = await _client().get_agent_card()
+        assert result["name"] == "TestBot"
+
+    @respx.mock
+    async def test_get_agent_card_other_agent(self):
+        other = "11111111-2222-3333-4444-555555555555"
+        respx.get(f"{BASE}/agents/{other}/agent-card").mock(
+            return_value=httpx.Response(200, json={"agent_id": other, "name": "OtherBot"}),
+        )
+        result = await _client().get_agent_card(other)
+        assert result["agent_id"] == other
+
+    @respx.mock
+    async def test_register_agent_raw(self):
+        respx.post(f"{BASE}/agents").mock(
+            return_value=httpx.Response(201, json={"agent_id": "new-1", "status": "active"}),
+        )
+        result = await _client().register_agent({"public_key": "abc", "display_name": "Bot"})
+        assert result["agent_id"] == "new-1"
+
+    @respx.mock
+    async def test_register(self):
+        respx.post(f"{BASE}/agents").mock(
+            return_value=httpx.Response(201, json={"agent_id": "new-2", "status": "active"}),
+        )
+        result = await _client().register(
+            public_key="abc123",
+            display_name="NewBot",
+            description="A test bot",
+            capabilities=["pdf", "ocr"],
+            registration_token="tok-abc",
+        )
+        assert result["status"] == "active"
+
+    @respx.mock
+    async def test_get_reputation(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/reputation").mock(
+            return_value=httpx.Response(200, json={"score": "4.8", "review_count": 12}),
+        )
+        result = await _client().get_reputation()
+        assert result["score"] == "4.8"
+
+
+class TestListingMethodsMissing:
+    """create_listing, get_listing, update_listing, browse_listings."""
+
+    @respx.mock
+    async def test_create_listing_with_kwargs(self):
+        respx.post(f"{BASE}/agents/{AGENT_ID}/listings").mock(
+            return_value=httpx.Response(201, json={"listing_id": "l1", "skill_id": "pdf"}),
+        )
+        result = await _client().create_listing(
+            skill_id="pdf", description="Extract PDFs", base_price="0.05",
+        )
+        assert result["listing_id"] == "l1"
+
+    @respx.mock
+    async def test_create_listing_with_data(self):
+        respx.post(f"{BASE}/agents/{AGENT_ID}/listings").mock(
+            return_value=httpx.Response(201, json={"listing_id": "l2"}),
+        )
+        result = await _client().create_listing(data={"skill_id": "ocr", "base_price": "0.10", "price_model": "per_call"})
+        assert result["listing_id"] == "l2"
+
+    @respx.mock
+    async def test_get_listing(self):
+        respx.get(f"{BASE}/listings/l1").mock(
+            return_value=httpx.Response(200, json={"listing_id": "l1", "skill_id": "pdf"}),
+        )
+        result = await _client().get_listing("l1")
+        assert result["skill_id"] == "pdf"
+
+    @respx.mock
+    async def test_update_listing(self):
+        respx.patch(f"{BASE}/listings/l1").mock(
+            return_value=httpx.Response(200, json={"listing_id": "l1", "base_price": "0.10"}),
+        )
+        result = await _client().update_listing("l1", {"base_price": "0.10"})
+        assert result["base_price"] == "0.10"
+
+    @respx.mock
+    async def test_browse_listings(self):
+        respx.get(f"{BASE}/listings").mock(
+            return_value=httpx.Response(200, json={"items": [{"listing_id": "l1"}], "total": 1}),
+        )
+        result = await _client().browse_listings()
+        assert result["total"] == 1
+
+    @respx.mock
+    async def test_browse_listings_with_filter(self):
+        respx.get(f"{BASE}/listings").mock(
+            return_value=httpx.Response(200, json={"items": [], "total": 0}),
+        )
+        result = await _client().browse_listings(skill_id="ocr", limit=5, offset=10)
+        assert result["total"] == 0
+
+
+class TestReviewMethodsMissing:
+    """submit_review, get_agent_reviews, get_job_reviews."""
+
+    @respx.mock
+    async def test_submit_review(self):
+        respx.post(f"{BASE}/jobs/j1/reviews").mock(
+            return_value=httpx.Response(201, json={"review_id": "r1", "rating": 5}),
+        )
+        result = await _client().submit_review("j1", {"rating": 5, "comment": "Great work"})
+        assert result["rating"] == 5
+
+    @respx.mock
+    async def test_get_agent_reviews(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/reviews").mock(
+            return_value=httpx.Response(200, json={"items": [{"rating": 5}], "total": 1}),
+        )
+        result = await _client().get_agent_reviews()
+        assert result["total"] == 1
+
+    @respx.mock
+    async def test_get_agent_reviews_other(self):
+        other = "11111111-2222-3333-4444-555555555555"
+        respx.get(f"{BASE}/agents/{other}/reviews").mock(
+            return_value=httpx.Response(200, json={"items": [], "total": 0}),
+        )
+        result = await _client().get_agent_reviews(other)
+        assert result["total"] == 0
+
+    @respx.mock
+    async def test_get_job_reviews(self):
+        respx.get(f"{BASE}/jobs/j1/reviews").mock(
+            return_value=httpx.Response(200, json=[{"rating": 5}, {"rating": 4}]),
+        )
+        result = await _client().get_job_reviews("j1")
+        assert len(result) == 2
+
+
+class TestDiscoverMethod:
+    @respx.mock
+    async def test_discover(self):
+        respx.get(f"{BASE}/discover").mock(
+            return_value=httpx.Response(200, json={"items": [{"skill_id": "pdf"}], "total": 1}),
+        )
+        result = await _client().discover(skill_id="pdf", max_price="1.00")
+        assert result["total"] == 1
+
+    @respx.mock
+    async def test_discover_no_params(self):
+        respx.get(f"{BASE}/discover").mock(
+            return_value=httpx.Response(200, json={"items": [], "total": 0}),
+        )
+        result = await _client().discover()
+        assert result["total"] == 0

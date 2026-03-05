@@ -214,7 +214,9 @@ class TestStatus:
                 assert "4.9" in result.output
 
     def test_status_no_config(self, runner):
-        with patch("arcoa.cli.load_config", side_effect=Exception("Config not found")):
+        from arcoa.exceptions import ArcoaConfigError
+
+        with patch("arcoa.cli.load_config", side_effect=ArcoaConfigError("Config not found")):
             result = runner.invoke(cli, ["status"])
             assert result.exit_code != 0
 
@@ -337,3 +339,18 @@ class TestConnect:
             result = runner.invoke(cli, ["connect"])
             assert result.exit_code != 0
             assert "No config" in result.output
+
+
+class TestSaveConfigPermissions:
+    def test_save_config_sets_secure_permissions(self, tmp_path):
+        """SDK-5: save_config must set 0o600 on config file and 0o700 on parent dir."""
+        from arcoa.config import save_config
+
+        config_file = tmp_path / ".arcoa" / "config.json"
+        save_config({"agent_id": "test", "private_key": "secret"}, str(config_file))
+
+        assert config_file.exists()
+        file_mode = oct(config_file.stat().st_mode & 0o777)
+        dir_mode = oct(config_file.parent.stat().st_mode & 0o777)
+        assert file_mode == "0o600", f"Config file should be 0o600, got {file_mode}"
+        assert dir_mode == "0o700", f"Config dir should be 0o700, got {dir_mode}"
