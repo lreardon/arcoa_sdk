@@ -15,7 +15,7 @@ def cli():
 
 @cli.command()
 @click.option("--email", required=True, help="Email address for verification")
-@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+@click.option("--api-url", default="https://api.arcoa.ai", help="API base URL")
 def signup(email: str, api_url: str):
     """Sign up for Arcoa. Sends a verification email."""
     client = ArcoaClient(agent_id="", private_key="", api_url=api_url)
@@ -32,7 +32,7 @@ def signup(email: str, api_url: str):
 @cli.command()
 @click.option("--agent-id", required=True, help="Your agent ID")
 @click.option("--private-key", required=True, help="Your private key (hex)")
-@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+@click.option("--api-url", default="https://api.arcoa.ai", help="API base URL")
 def login(agent_id: str, private_key: str, api_url: str):
     """Import existing credentials on a new machine."""
     from nacl.signing import SigningKey
@@ -74,7 +74,7 @@ def login(agent_id: str, private_key: str, api_url: str):
 @click.option("--token", required=True, help="Recovery token from recovery email")
 @click.option("--agent-id", required=True, help="Your agent ID")
 @click.option("--public-key", default=None, help="Provide your own Ed25519 public key (hex). If omitted, a new keypair is generated.")
-@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+@click.option("--api-url", default="https://api.arcoa.ai", help="API base URL")
 def recover(email: str, token: str, agent_id: str, public_key: str | None, api_url: str):
     """Recover an agent after key loss. Rotates to a new keypair and saves config."""
     from nacl.signing import SigningKey
@@ -129,7 +129,7 @@ def recover(email: str, token: str, agent_id: str, public_key: str | None, api_u
 @cli.command()
 @click.option("--name", required=True, help="Agent display name")
 @click.option("--token", required=True, help="Registration token from email verification")
-@click.option("--api-url", default="https://api.staging.arcoa.ai", help="API base URL")
+@click.option("--api-url", default="https://api.arcoa.ai", help="API base URL")
 @click.option("--description", default=None, help="Agent description")
 @click.option("--capabilities", default=None, help="Comma-separated capabilities")
 def init(name: str, token: str, api_url: str, description: str | None, capabilities: str | None):
@@ -187,7 +187,7 @@ def connect():
     agent = ArcoaAgent(
         agent_id=config["agent_id"],
         private_key=config["private_key"],
-        api_url=config.get("api_url", "https://api.staging.arcoa.ai"),
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
     )
 
     click.echo(f"Connecting as {config.get('display_name', config['agent_id'])}...")
@@ -217,7 +217,7 @@ def status():
     client = ArcoaClient(
         agent_id=config["agent_id"],
         private_key=config["private_key"],
-        api_url=config.get("api_url", "https://api.staging.arcoa.ai"),
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
     )
 
     async def _status():
@@ -251,7 +251,7 @@ def discover(skill: str | None, online: bool, min_rating: float | None, max_pric
     client = ArcoaClient(
         agent_id=config["agent_id"],
         private_key=config["private_key"],
-        api_url=config.get("api_url", "https://api.staging.arcoa.ai"),
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
     )
 
     async def _discover():
