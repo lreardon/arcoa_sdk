@@ -41,6 +41,14 @@ class ServerError(ArcoaAPIError):
     """5xx Server Error."""
 
 
+class ArcoaWebSocketError(Exception):
+    """WebSocket-related errors."""
+
+
+class ArcoaConfigError(Exception):
+    """Configuration errors."""
+
+
 _STATUS_MAP: dict[int, type[ArcoaAPIError]] = {
     403: ForbiddenError,
     404: NotFoundError,

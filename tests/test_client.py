@@ -17,11 +17,11 @@ from arcoa.exceptions import (
 
 BASE = "https://api.arcoa.test"
 AGENT_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-API_KEY = "test-key-123"
+PRIVATE_KEY = "a" * 64  # dummy hex key (not used — respx intercepts before signing matters)
 
 
 def _client() -> ArcoaClient:
-    return ArcoaClient(BASE, AGENT_ID, API_KEY)
+    return ArcoaClient(agent_id=AGENT_ID, private_key=PRIVATE_KEY, api_url=BASE)
 
 
 # --------------------------------------------------------------------------
@@ -226,3 +226,132 @@ class TestErrorHandling:
         with pytest.raises(ServerError) as exc_info:
             await _client().get_fees()
         assert "Service Unavailable" in exc_info.value.detail
+
+
+# --------------------------------------------------------------------------
+# Agent status & balance
+# --------------------------------------------------------------------------
+
+
+class TestAgentStatusAndBalance:
+    @respx.mock
+    async def test_get_agent_status(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/status").mock(
+            return_value=httpx.Response(200, json={"status": "active", "display_name": "Bot"}),
+        )
+        result = await _client().get_agent_status()
+        assert result["status"] == "active"
+
+    @respx.mock
+    async def test_get_agent_status_other(self):
+        other = "11111111-2222-3333-4444-555555555555"
+        respx.get(f"{BASE}/agents/{other}/status").mock(
+            return_value=httpx.Response(200, json={"status": "inactive"}),
+        )
+        result = await _client().get_agent_status(other)
+        assert result["status"] == "inactive"
+
+    @respx.mock
+    async def test_get_agent_balance(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/balance").mock(
+            return_value=httpx.Response(200, json={"balance": "50.00"}),
+        )
+        result = await _client().get_agent_balance()
+        assert result["balance"] == "50.00"
+
+    @respx.mock
+    async def test_dev_deposit(self):
+        respx.post(f"{BASE}/agents/{AGENT_ID}/deposit").mock(
+            return_value=httpx.Response(200, json={"balance": "150.00"}),
+        )
+        result = await _client().dev_deposit("100.00")
+        assert result["balance"] == "150.00"
+
+
+# --------------------------------------------------------------------------
+# Job abort & dispute
+# --------------------------------------------------------------------------
+
+
+class TestJobAbortAndDispute:
+    @respx.mock
+    async def test_abort_job(self):
+        respx.post(f"{BASE}/jobs/j1/abort").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1", "status": "aborted"}),
+        )
+        result = await _client().abort_job("j1")
+        assert result["status"] == "aborted"
+
+    @respx.mock
+    async def test_dispute_job(self):
+        respx.post(f"{BASE}/jobs/j1/dispute").mock(
+            return_value=httpx.Response(200, json={"job_id": "j1", "status": "disputed"}),
+        )
+        result = await _client().dispute_job("j1")
+        assert result["status"] == "disputed"
+
+
+# --------------------------------------------------------------------------
+# Webhook methods
+# --------------------------------------------------------------------------
+
+
+class TestWebhookMethods:
+    @respx.mock
+    async def test_list_webhooks(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/webhooks").mock(
+            return_value=httpx.Response(200, json=[{"delivery_id": "d1", "status": "delivered"}]),
+        )
+        result = await _client().list_webhooks()
+        assert len(result) == 1
+        assert result[0]["delivery_id"] == "d1"
+
+    @respx.mock
+    async def test_list_webhooks_with_status_filter(self):
+        respx.get(f"{BASE}/agents/{AGENT_ID}/webhooks").mock(
+            return_value=httpx.Response(200, json=[]),
+        )
+        result = await _client().list_webhooks(status="failed")
+        assert result == []
+
+    @respx.mock
+    async def test_redeliver_webhook(self):
+        respx.post(f"{BASE}/agents/{AGENT_ID}/webhooks/d1/redeliver").mock(
+            return_value=httpx.Response(200, json={"delivery_id": "d1", "status": "pending"}),
+        )
+        result = await _client().redeliver_webhook("d1")
+        assert result["status"] == "pending"
+
+
+# --------------------------------------------------------------------------
+# Auth recovery
+# --------------------------------------------------------------------------
+
+
+class TestAuthMethods:
+    @respx.mock
+    async def test_signup(self):
+        respx.post(f"{BASE}/auth/signup").mock(
+            return_value=httpx.Response(200, json={"message": "Verification email sent"}),
+        )
+        c = ArcoaClient(api_url=BASE)
+        result = await c.signup("test@example.com")
+        assert "message" in result
+
+    @respx.mock
+    async def test_request_recovery(self):
+        respx.post(f"{BASE}/auth/recover").mock(
+            return_value=httpx.Response(200, json={"message": "Recovery email sent"}),
+        )
+        c = ArcoaClient(api_url=BASE)
+        result = await c.request_recovery("test@example.com")
+        assert "message" in result
+
+    @respx.mock
+    async def test_rotate_key(self):
+        respx.post(f"{BASE}/auth/rotate-key").mock(
+            return_value=httpx.Response(200, json={"message": "Public key rotated successfully."}),
+        )
+        c = ArcoaClient(api_url=BASE)
+        result = await c.rotate_key("tok-123", "newpubkey")
+        assert "rotated" in result["message"]

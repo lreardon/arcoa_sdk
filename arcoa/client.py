@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
+from .auth import sign_request
 from .exceptions import raise_for_status
 
 
@@ -14,17 +16,23 @@ class ArcoaClient:
 
     Usage::
 
-        async with ArcoaClient(base_url, agent_id, api_key) as client:
+        async with ArcoaClient(agent_id="...", private_key="...", api_url="https://api.arcoa.ai") as client:
             balance = await client.get_balance()
 
     Can also be used without the context manager — a fresh ``httpx.AsyncClient``
     is created (and closed) for every request in that case.
     """
 
-    def __init__(self, base_url: str, agent_id: str, api_key: str):
-        self.base_url = base_url.rstrip("/")
+    def __init__(
+        self,
+        *,
+        agent_id: str = "",
+        private_key: str = "",
+        api_url: str = "https://api.arcoa.ai",
+    ):
+        self.api_url = api_url.rstrip("/")
         self.agent_id = agent_id
-        self.api_key = api_key
+        self.private_key = private_key
         self._client: httpx.AsyncClient | None = None
 
     # ------------------------------------------------------------------
@@ -32,10 +40,7 @@ class ArcoaClient:
     # ------------------------------------------------------------------
 
     async def __aenter__(self) -> "ArcoaClient":
-        self._client = httpx.AsyncClient(
-            base_url=self.base_url,
-            headers=self._default_headers(),
-        )
+        self._client = httpx.AsyncClient(base_url=self.api_url)
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -47,34 +52,35 @@ class ArcoaClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _default_headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+    def _auth_headers(self, method: str, path: str, body: bytes = b"") -> dict[str, str]:
+        if not self.agent_id or not self.private_key:
+            return {}
+        return sign_request(self.agent_id, self.private_key, method, path, body)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
-        """Send a request and return the parsed JSON response.
+        """Send a request and return the parsed JSON response."""
+        body = b""
+        if "json" in kwargs:
+            import json as _json
+            body = _json.dumps(kwargs["json"], separators=(",", ":")).encode()
 
-        Raises a typed :class:`ArcoaAPIError` subclass on non-2xx responses.
-        """
+        headers = self._auth_headers(method, path, body)
+        headers["Content-Type"] = "application/json"
+
         if self._client is not None:
-            response = await self._client.request(method, path, **kwargs)
+            response = await self._client.request(method, path, headers=headers, **kwargs)
         else:
-            async with httpx.AsyncClient(
-                base_url=self.base_url,
-                headers=self._default_headers(),
-            ) as client:
-                response = await client.request(method, path, **kwargs)
+            async with httpx.AsyncClient(base_url=self.api_url) as client:
+                response = await client.request(method, path, headers=headers, **kwargs)
 
         if response.status_code >= 400:
             try:
-                body = response.json()
+                resp_body = response.json()
             except Exception:
-                body = None
+                resp_body = None
             detail = ""
-            if isinstance(body, dict):
-                detail = body.get("detail", "") or body.get("message", "")
+            if isinstance(resp_body, dict):
+                detail = resp_body.get("detail", "") or resp_body.get("message", "")
             if not detail:
                 detail = response.text or response.reason_phrase or "Unknown error"
             retry_after: float | None = None
@@ -85,18 +91,57 @@ class ArcoaClient:
                         retry_after = float(ra)
                     except ValueError:
                         pass
-            raise_for_status(response.status_code, detail, body, retry_after)
+            raise_for_status(response.status_code, detail, resp_body, retry_after)
 
         if response.status_code == 204:
             return {}
         return response.json()
 
     # ------------------------------------------------------------------
+    # Auth endpoints (unauthenticated)
+    # ------------------------------------------------------------------
+
+    async def signup(self, email: str) -> dict:
+        """POST /auth/signup"""
+        return await self._request("POST", "/auth/signup", json={"email": email})
+
+    async def rotate_key(self, recovery_token: str, new_public_key: str) -> dict:
+        """POST /auth/rotate-key"""
+        return await self._request(
+            "POST", "/auth/rotate-key",
+            json={"recovery_token": recovery_token, "new_public_key": new_public_key},
+        )
+
+    # ------------------------------------------------------------------
     # Agent endpoints
     # ------------------------------------------------------------------
 
-    async def register_agent(self, data: dict) -> dict:
+    async def register(
+        self,
+        *,
+        public_key: str,
+        display_name: str,
+        description: str | None = None,
+        capabilities: list[str] | None = None,
+        registration_token: str | None = None,
+        hosting_mode: str = "websocket",
+    ) -> dict:
         """POST /agents — register a new agent."""
+        data: dict[str, Any] = {
+            "public_key": public_key,
+            "display_name": display_name,
+            "hosting_mode": hosting_mode,
+        }
+        if description is not None:
+            data["description"] = description
+        if capabilities is not None:
+            data["capabilities"] = capabilities
+        if registration_token is not None:
+            data["registration_token"] = registration_token
+        return await self._request("POST", "/agents", json=data)
+
+    async def register_agent(self, data: dict) -> dict:
+        """POST /agents — register a new agent (raw dict variant)."""
         return await self._request("POST", "/agents", json=data)
 
     async def get_agent(self, agent_id: str | None = None) -> dict:
@@ -121,6 +166,21 @@ class ArcoaClient:
         """GET /agents/{agent_id}/reputation"""
         aid = agent_id or self.agent_id
         return await self._request("GET", f"/agents/{aid}/reputation")
+
+    async def get_agent_status(self, agent_id: str | None = None) -> dict:
+        """GET /agents/{agent_id}/status — public agent readiness status."""
+        aid = agent_id or self.agent_id
+        return await self._request("GET", f"/agents/{aid}/status")
+
+    async def get_agent_balance(self, agent_id: str | None = None) -> dict:
+        """GET /agents/{agent_id}/balance — quick balance check."""
+        aid = agent_id or self.agent_id
+        return await self._request("GET", f"/agents/{aid}/balance")
+
+    async def dev_deposit(self, amount: str, agent_id: str | None = None) -> dict:
+        """POST /agents/{agent_id}/deposit — dev-only credit deposit."""
+        aid = agent_id or self.agent_id
+        return await self._request("POST", f"/agents/{aid}/deposit", json={"amount": amount})
 
     # ------------------------------------------------------------------
     # Wallet endpoints
@@ -231,6 +291,14 @@ class ArcoaClient:
         """POST /jobs/{job_id}/fail"""
         return await self._request("POST", f"/jobs/{job_id}/fail")
 
+    async def abort_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/abort — abort a funded/in-progress job."""
+        return await self._request("POST", f"/jobs/{job_id}/abort")
+
+    async def dispute_job(self, job_id: str) -> dict:
+        """POST /jobs/{job_id}/dispute — dispute a failed job."""
+        return await self._request("POST", f"/jobs/{job_id}/dispute")
+
     # ------------------------------------------------------------------
     # Reviews
     # ------------------------------------------------------------------
@@ -255,3 +323,32 @@ class ArcoaClient:
     async def get_fees(self) -> dict:
         """GET /fees"""
         return await self._request("GET", "/fees")
+
+    # ------------------------------------------------------------------
+    # Webhook endpoints
+    # ------------------------------------------------------------------
+
+    async def list_webhooks(
+        self, status: str | None = None, limit: int = 20, offset: int = 0,
+    ) -> list:
+        """GET /agents/{agent_id}/webhooks — list webhook deliveries."""
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if status is not None:
+            params["status"] = status
+        return await self._request(
+            "GET", f"/agents/{self.agent_id}/webhooks", params=params,
+        )
+
+    async def redeliver_webhook(self, delivery_id: str) -> dict:
+        """POST /agents/{agent_id}/webhooks/{delivery_id}/redeliver"""
+        return await self._request(
+            "POST", f"/agents/{self.agent_id}/webhooks/{delivery_id}/redeliver",
+        )
+
+    # ------------------------------------------------------------------
+    # Auth recovery (unauthenticated)
+    # ------------------------------------------------------------------
+
+    async def request_recovery(self, email: str) -> dict:
+        """POST /auth/recover — request a key recovery email."""
+        return await self._request("POST", "/auth/recover", json={"email": email})
