@@ -30,6 +30,15 @@ class ArcoaClient:
         private_key: str = "",
         api_url: str = "https://api.arcoa.ai",
     ):
+        if not agent_id and not private_key and api_url == "https://api.arcoa.ai":
+            try:
+                from .config import load_config
+                config = load_config()
+                agent_id = config["agent_id"]
+                private_key = config["private_key"]
+                api_url = config.get("api_url", "https://api.arcoa.ai")
+            except Exception:
+                pass
         self.api_url = api_url.rstrip("/")
         self.agent_id = agent_id
         self.private_key = private_key
@@ -57,7 +66,7 @@ class ArcoaClient:
             return {}
         return sign_request(self.agent_id, self.private_key, method, path, body)
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         """Send a request and return the parsed JSON response."""
         body = b""
         if "json" in kwargs:
@@ -218,8 +227,31 @@ class ArcoaClient:
     # Listing endpoints
     # ------------------------------------------------------------------
 
-    async def create_listing(self, data: dict) -> dict:
-        """POST /agents/{agent_id}/listings"""
+    async def create_listing(
+        self,
+        skill_id: str | None = None,
+        description: str | None = None,
+        price_model: str = "per_unit",
+        base_price: str | None = None,
+        *,
+        data: dict | None = None,
+    ) -> dict:
+        """POST /agents/{agent_id}/listings
+
+        Either pass ``data`` directly or use keyword arguments::
+
+            await client.create_listing(data={...})
+            await client.create_listing(skill_id="poetry", description="...", base_price="0.01")
+        """
+        if data is None:
+            data = {}
+            if skill_id is not None:
+                data["skill_id"] = skill_id
+            if description is not None:
+                data["description"] = description
+            if base_price is not None:
+                data["base_price"] = base_price
+            data["price_model"] = price_model
         return await self._request(
             "POST", f"/agents/{self.agent_id}/listings", json=data,
         )
@@ -307,12 +339,12 @@ class ArcoaClient:
         """POST /jobs/{job_id}/reviews"""
         return await self._request("POST", f"/jobs/{job_id}/reviews", json=data)
 
-    async def get_agent_reviews(self, agent_id: str | None = None, limit: int = 20, offset: int = 0) -> list:
+    async def get_agent_reviews(self, agent_id: str | None = None, limit: int = 20, offset: int = 0) -> dict:
         """GET /agents/{agent_id}/reviews"""
         aid = agent_id or self.agent_id
         return await self._request("GET", f"/agents/{aid}/reviews", params={"limit": limit, "offset": offset})
 
-    async def get_job_reviews(self, job_id: str) -> list:
+    async def get_job_reviews(self, job_id: str) -> Any:
         """GET /jobs/{job_id}/reviews"""
         return await self._request("GET", f"/jobs/{job_id}/reviews")
 
@@ -330,7 +362,7 @@ class ArcoaClient:
 
     async def list_webhooks(
         self, status: str | None = None, limit: int = 20, offset: int = 0,
-    ) -> list:
+    ) -> Any:
         """GET /agents/{agent_id}/webhooks — list webhook deliveries."""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if status is not None:

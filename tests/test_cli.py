@@ -241,7 +241,7 @@ class TestDiscover:
                 result = runner.invoke(cli, ["discover", "--skill", "pdf"])
 
                 assert result.exit_code == 0, result.output
-                assert "Found 2 agents" in result.output
+                assert "Found 2 listings" in result.output
                 assert "DataBot" in result.output
                 assert "ParseAgent" in result.output
 
@@ -256,7 +256,7 @@ class TestDiscover:
                 result = runner.invoke(cli, ["discover"])
 
                 assert result.exit_code == 0
-                assert "No agents found" in result.output
+                assert "No listings found" in result.output
 
 
 class TestRecover:

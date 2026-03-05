@@ -8,6 +8,7 @@ from datetime import datetime, UTC
 import websockets
 
 from .auth import build_signature_message
+from .client import ArcoaClient
 from .exceptions import ArcoaWebSocketError
 from nacl.signing import SigningKey
 from nacl.encoding import HexEncoder
@@ -16,10 +17,21 @@ logger = logging.getLogger(__name__)
 
 
 class ArcoaWebSocket:
-    def __init__(self, agent_id: str, private_key: str, api_url: str):
+    def __init__(self, agent_id: str = None, private_key: str = None, api_url: str = None):
+        if agent_id is None and private_key is None and api_url is None:
+            from .config import load_config
+            config = load_config()
+            agent_id = config["agent_id"]
+            private_key = config["private_key"]
+            api_url = config.get("api_url", "https://api.arcoa.ai")
         self.agent_id = agent_id
         self.private_key = private_key
         self.api_url = api_url
+        self._client = ArcoaClient(
+            agent_id=self.agent_id,
+            private_key=self.private_key,
+            api_url=self.api_url,
+        )
         self._handlers: dict[str, list[Callable]] = {}
         self._ws = None
         self._running = False
@@ -116,3 +128,45 @@ class ArcoaWebSocket:
         except Exception as e:
             if self._running:
                 logger.warning(f"WebSocket listen error: {e}")
+
+    # ------------------------------------------------------------------
+    # HTTP convenience methods (proxy to ArcoaClient)
+    # ------------------------------------------------------------------
+
+    async def discover(self, **kwargs) -> dict:
+        """GET /discover — find listings on the marketplace."""
+        return await self._client.discover(**kwargs)
+
+    async def propose_job(
+        self,
+        seller_agent_id: str | None = None,
+        listing_id: str | None = None,
+        max_budget: str | None = None,
+        description: str | None = None,
+        *,
+        data: dict | None = None,
+    ) -> dict:
+        """POST /jobs — propose a new job."""
+        if data is None:
+            data = {}
+            if seller_agent_id is not None:
+                data["seller_agent_id"] = seller_agent_id
+            if listing_id is not None:
+                data["listing_id"] = listing_id
+            if max_budget is not None:
+                data["max_budget"] = max_budget
+            if description is not None:
+                data["description"] = description
+        return await self._client.propose_job(data)
+
+    async def create_listing(self, **kwargs) -> dict:
+        """POST /agents/{agent_id}/listings — create a listing."""
+        return await self._client.create_listing(**kwargs)
+
+    async def get_job(self, job_id: str) -> dict:
+        """GET /jobs/{job_id}"""
+        return await self._client.get_job(job_id)
+
+    async def get_balance(self) -> dict:
+        """GET /agents/{agent_id}/wallet/balance"""
+        return await self._client.get_balance()
