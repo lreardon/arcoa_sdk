@@ -476,7 +476,7 @@ class TestListingMethodsMissing:
         respx.post(f"{BASE}/agents/{AGENT_ID}/listings").mock(
             return_value=httpx.Response(201, json={"listing_id": "l2"}),
         )
-        result = await _client().create_listing(data={"skill_id": "ocr", "base_price": "0.10", "price_model": "per_call"})
+        result = await _client().create_listing(data={"skill_id": "ocr", "base_price": "0.10"})
         assert result["listing_id"] == "l2"
 
     @respx.mock

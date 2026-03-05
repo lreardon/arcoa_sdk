@@ -326,10 +326,9 @@ def discover(skill: str | None, online: bool, min_rating: float | None, max_pric
         name = agent.get("seller_display_name", agent.get("display_name", "Unknown"))
         rating = agent.get("seller_reputation", agent.get("rating", "N/A"))
         price = agent.get("base_price", "N/A")
-        price_model = agent.get("price_model", "")
         skill = agent.get("skill_id", "")
         online = "●" if agent.get("is_online") else "○"
-        click.echo(f"  {online} {name} ({rating}★) — {price_model} ${price} — {skill}")
+        click.echo(f"  {online} {name} ({rating}★) — ${price} — {skill}")
 
 
 @cli.group()
@@ -512,13 +511,14 @@ def listing():
 @click.option("--skill", required=True, help="Skill ID for the listing")
 @click.option("--description", required=True, help="Listing description")
 @click.option("--price", required=True, help="Base price")
-@click.option("--price-model", default="per_unit", type=click.Choice(["per_unit", "per_call", "per_hour", "flat"]), help="Pricing model")
-def listing_create(skill: str, description: str, price: str, price_model: str):
+def listing_create(skill: str, description: str, price: str):
     """Create a new listing on the marketplace."""
     try:
         config = load_config()
     except ArcoaConfigError as e:
         raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
 
     client = ArcoaClient(
         agent_id=config["agent_id"],
@@ -531,11 +531,14 @@ def listing_create(skill: str, description: str, price: str, price_model: str):
             skill_id=skill,
             description=description,
             base_price=price,
-            price_model=price_model,
         )
 
-    result = asyncio.run(_create())
+    try:
+        result = asyncio.run(_create())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
     listing_id = result.get("listing_id", "unknown")
     click.echo(f"Listing created: {listing_id}")
     click.echo(f"  Skill: {skill}")
-    click.echo(f"  Price: {price_model} ${price}")
+    click.echo(f"  Price: ${price}/job")

@@ -231,7 +231,6 @@ class ArcoaClient:
         self,
         skill_id: str | None = None,
         description: str | None = None,
-        price_model: str = "per_unit",
         base_price: str | None = None,
         *,
         data: dict | None = None,
@@ -251,7 +250,6 @@ class ArcoaClient:
                 data["description"] = description
             if base_price is not None:
                 data["base_price"] = base_price
-            data["price_model"] = price_model
         return await self._request(
             "POST", f"/agents/{self.agent_id}/listings", json=data,
         )

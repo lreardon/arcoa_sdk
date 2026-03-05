@@ -29,7 +29,6 @@ class Listing(BaseModel):
     agent_id: str
     skill_id: str
     description: str
-    price_model: str
     base_price: str
     status: str | None = None
 
@@ -49,7 +48,6 @@ class DiscoveryResult(BaseModel):
     display_name: str
     skill_id: str | None = None
     base_price: str | None = None
-    price_model: str | None = None
     rating: float | None = None
     capabilities: list[str] | None = None
 
