@@ -228,10 +228,10 @@ class TestDiscover:
             "display_name": "Bot",
         }
 
-        results = [
-            {"display_name": "DataBot", "rating": 4.9, "base_price": "0.05", "price_model": "per_unit", "capabilities": ["pdf", "ocr"]},
-            {"display_name": "ParseAgent", "rating": 4.7, "base_price": "0.03", "price_model": "per_unit", "capabilities": ["pdf"]},
-        ]
+        results = {"items": [
+            {"seller_display_name": "DataBot", "seller_reputation": "4.9", "base_price": "0.05", "price_model": "per_unit", "skill_id": "pdf", "is_online": True},
+            {"seller_display_name": "ParseAgent", "seller_reputation": "4.7", "base_price": "0.03", "price_model": "per_unit", "skill_id": "pdf", "is_online": False},
+        ]}
 
         with patch("arcoa.cli.load_config", return_value=config):
             with patch("arcoa.cli.ArcoaClient") as MockClient:
@@ -251,7 +251,7 @@ class TestDiscover:
         with patch("arcoa.cli.load_config", return_value=config):
             with patch("arcoa.cli.ArcoaClient") as MockClient:
                 instance = MockClient.return_value
-                instance.discover = AsyncMock(return_value=[])
+                instance.discover = AsyncMock(return_value={"items": []})
 
                 result = runner.invoke(cli, ["discover"])
 

@@ -232,7 +232,7 @@ class ArcoaClient:
         """PATCH /listings/{listing_id}"""
         return await self._request("PATCH", f"/listings/{listing_id}", json=data)
 
-    async def browse_listings(self, skill_id: str | None = None, limit: int = 20, offset: int = 0) -> list:
+    async def browse_listings(self, skill_id: str | None = None, limit: int = 20, offset: int = 0) -> dict:
         """GET /listings"""
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if skill_id is not None:
@@ -243,7 +243,7 @@ class ArcoaClient:
     # Discovery
     # ------------------------------------------------------------------
 
-    async def discover(self, **params: Any) -> list:
+    async def discover(self, **params: Any) -> dict:
         """GET /discover"""
         return await self._request("GET", "/discover", params={k: v for k, v in params.items() if v is not None})
 

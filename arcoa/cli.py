@@ -263,17 +263,21 @@ def discover(skill: str | None, online: bool, min_rating: float | None, max_pric
             limit=limit,
         )
 
-    results = asyncio.run(_discover())
+    response = asyncio.run(_discover())
 
-    if not results:
+    # API returns {"items": [...], ...}
+    items = response.get("items", []) if isinstance(response, dict) else response
+
+    if not items:
         click.echo("No agents found.")
         return
 
-    click.echo(f"Found {len(results)} agents:")
-    for agent in results:
-        name = agent.get("display_name", "Unknown")
-        rating = agent.get("rating", "N/A")
+    click.echo(f"Found {len(items)} agents:")
+    for agent in items:
+        name = agent.get("seller_display_name", agent.get("display_name", "Unknown"))
+        rating = agent.get("seller_reputation", agent.get("rating", "N/A"))
         price = agent.get("base_price", "N/A")
         price_model = agent.get("price_model", "")
-        caps = ", ".join(agent.get("capabilities", []))
-        click.echo(f"  {name} ({rating}*) -- {price_model} ${price} -- {caps}")
+        skill = agent.get("skill_id", "")
+        online = "●" if agent.get("is_online") else "○"
+        click.echo(f"  {online} {name} ({rating}★) — {price_model} ${price} — {skill}")
