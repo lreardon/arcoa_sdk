@@ -18,12 +18,24 @@ def cli():
 @click.option("--api-url", default="https://api.arcoa.ai", help="API base URL")
 def signup(email: str, api_url: str):
     """Sign up for Arcoa. Sends a verification email."""
+    from .exceptions import ConflictError, ArcoaAPIError
+
     client = ArcoaClient(agent_id="", private_key="", api_url=api_url)
 
     async def _signup():
         return await client.signup(email)
 
-    asyncio.run(_signup())
+    try:
+        asyncio.run(_signup())
+    except ConflictError:
+        raise click.ClickException(
+            "This email already has an active agent.\n"
+            "  Use 'arcoa login' to import credentials on this machine.\n"
+            "  Use 'arcoa recover' if you lost your private key.\n"
+            "  Use 'arcoa deactivate' to deactivate and re-register."
+        )
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
 
     click.echo(f"Verification email sent to {email}")
     click.echo("Check your inbox and click the verification link to get your registration token.")
@@ -174,6 +186,42 @@ def init(name: str, token: str, api_url: str, description: str | None, capabilit
 
 
 @cli.command()
+def deactivate():
+    """Deactivate your agent. This cancels active jobs and refunds escrow."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    agent_id = config["agent_id"]
+    display_name = config.get("display_name", agent_id)
+
+    if not click.confirm(f"Deactivate agent '{display_name}' ({agent_id})? This cannot be undone."):
+        click.echo("Cancelled.")
+        return
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _deactivate():
+        return await client.deactivate_agent()
+
+    try:
+        asyncio.run(_deactivate())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Agent '{display_name}' has been deactivated.")
+    click.echo("Active jobs have been cancelled and escrowed funds refunded.")
+    click.echo("You can now re-register with the same email using 'arcoa signup'.")
+
+
+@cli.command()
 def connect():
     """Connect to the marketplace and listen for events."""
     try:
@@ -282,6 +330,176 @@ def discover(skill: str | None, online: bool, min_rating: float | None, max_pric
         skill = agent.get("skill_id", "")
         online = "●" if agent.get("is_online") else "○"
         click.echo(f"  {online} {name} ({rating}★) — {price_model} ${price} — {skill}")
+
+
+@cli.group()
+def wallet():
+    """Manage your agent's wallet."""
+    pass
+
+
+@wallet.command("deposit-address")
+def wallet_deposit_address():
+    """Get your USDC deposit address."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _get():
+        return await client.get_deposit_address()
+
+    try:
+        result = asyncio.run(_get())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Deposit Address: {result['address']}")
+    click.echo(f"Network: {result['network']}")
+    click.echo(f"USDC Contract: {result['usdc_contract']}")
+    click.echo(f"Min Deposit: ${result.get('min_deposit', '0.01')}")
+
+
+@wallet.command("balance")
+def wallet_balance():
+    """Show your current balance."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _get():
+        return await client.get_balance()
+
+    try:
+        result = asyncio.run(_get())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Balance: {result.get('balance', '0.00')} credits")
+
+
+@wallet.command("transactions")
+@click.option("--limit", type=int, default=20, help="Max results")
+def wallet_transactions(limit: int):
+    """Show transaction history."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _get():
+        return await client.get_transactions()
+
+    try:
+        result = asyncio.run(_get())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    items = result.get("items", result) if isinstance(result, dict) else result
+    if not items:
+        click.echo("No transactions.")
+        return
+
+    if isinstance(items, list):
+        for tx in items[:limit]:
+            if isinstance(tx, dict):
+                kind = tx.get("type", tx.get("transaction_type", ""))
+                amount = tx.get("amount", "")
+                status = tx.get("status", "")
+                created = tx.get("created_at", "")[:19]
+                click.echo(f"  {created}  {kind:12s}  {amount:>10s}  {status}")
+    else:
+        click.echo(str(items))
+
+
+@wallet.command("notify-deposit")
+@click.option("--tx-hash", required=True, help="On-chain transaction hash")
+def wallet_notify_deposit(tx_hash: str):
+    """Notify platform of an on-chain USDC deposit for faster crediting."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _notify():
+        return await client.notify_deposit(tx_hash)
+
+    try:
+        result = asyncio.run(_notify())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    status = result.get("status", "unknown")
+    amount = result.get("amount_usdc", "?")
+    click.echo(f"Deposit of ${amount} detected (status: {status})")
+
+
+@wallet.command("withdraw")
+@click.option("--amount", required=True, help="Amount to withdraw")
+@click.option("--address", required=True, help="Destination USDC address")
+def wallet_withdraw(amount: str, address: str):
+    """Withdraw USDC to an external address."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    if not click.confirm(f"Withdraw ${amount} to {address}?"):
+        click.echo("Cancelled.")
+        return
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _withdraw():
+        return await client.request_withdrawal(amount, address)
+
+    try:
+        result = asyncio.run(_withdraw())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Withdrawal submitted: ${amount} → {address}")
+    if "withdrawal_id" in result:
+        click.echo(f"Withdrawal ID: {result['withdrawal_id']}")
 
 
 @cli.group()

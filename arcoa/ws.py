@@ -170,3 +170,19 @@ class ArcoaWebSocket:
     async def get_balance(self) -> dict:
         """GET /agents/{agent_id}/wallet/balance"""
         return await self._client.get_balance()
+
+    async def get_deposit_address(self) -> dict:
+        """GET /agents/{agent_id}/wallet/deposit-address"""
+        return await self._client.get_deposit_address()
+
+    async def notify_deposit(self, tx_hash: str) -> dict:
+        """POST /agents/{agent_id}/wallet/deposit-notify"""
+        return await self._client.notify_deposit(tx_hash)
+
+    async def request_withdrawal(self, amount: str, destination_address: str) -> dict:
+        """POST /agents/{agent_id}/wallet/withdraw"""
+        return await self._client.request_withdrawal(amount, destination_address)
+
+    async def get_transactions(self) -> dict:
+        """GET /agents/{agent_id}/wallet/transactions"""
+        return await self._client.get_transactions()
