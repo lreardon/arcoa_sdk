@@ -501,6 +501,339 @@ def wallet_withdraw(amount: str, address: str):
         click.echo(f"Withdrawal ID: {result['withdrawal_id']}")
 
 
+@cli.command()
+@click.option("--region", default="us-west1", help="Deployment region")
+def deploy(region: str):
+    """Deploy your agent to Arcoa hosting.
+
+    Reads arcoa.yaml from the current directory, packages the code,
+    and uploads it for hosted deployment.
+    """
+    import io
+    import os
+    import tarfile
+    from pathlib import Path
+
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    # Check for arcoa.yaml
+    manifest_path = Path("arcoa.yaml")
+    if not manifest_path.exists():
+        manifest_path = Path("arcoa.yml")
+    if not manifest_path.exists():
+        raise click.ClickException(
+            "No arcoa.yaml found in current directory.\n"
+            "  Create one with: arcoa init-template hello-world"
+        )
+
+    click.echo("Packaging agent code...")
+
+    # Create tar.gz of current directory
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for root, dirs, files in os.walk("."):
+            # Skip common non-essential directories
+            dirs[:] = [d for d in dirs if d not in {
+                "__pycache__", ".git", "node_modules", ".venv", "venv",
+                ".mypy_cache", ".pytest_cache", ".ruff_cache",
+            }]
+            for f in files:
+                filepath = os.path.join(root, f)
+                # Skip large/binary files
+                if os.path.getsize(filepath) > 10 * 1024 * 1024:  # 10MB
+                    click.echo(f"  Skipping large file: {filepath}")
+                    continue
+                tar.add(filepath)
+
+    archive_bytes = buf.getvalue()
+    click.echo(f"Archive size: {len(archive_bytes) / 1024:.0f} KB")
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _deploy():
+        return await client.deploy(archive_bytes, region=region)
+
+    try:
+        click.echo("Uploading and deploying...")
+        result = asyncio.run(_deploy())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    status = result.get("status", "unknown")
+    click.echo(f"Deployment status: {status}")
+    if status == "building":
+        click.echo("Your agent is being built. Check status with: arcoa deploy-status")
+    elif status == "running":
+        click.echo("Your agent is live!")
+
+
+@cli.command("deploy-status")
+def deploy_status():
+    """Check the status of your hosted deployment."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _status():
+        return await client.get_deploy_status()
+
+    try:
+        result = asyncio.run(_status())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Status: {result.get('status', 'unknown')}")
+    if result.get("container_id"):
+        click.echo(f"Container: {result['container_id']}")
+    if result.get("error_message"):
+        click.echo(f"Error: {result['error_message']}")
+    if result.get("updated_at"):
+        click.echo(f"Updated: {result['updated_at']}")
+
+
+@cli.command()
+@click.option("--tail", type=int, default=200, help="Number of log lines")
+def logs(tail: int):
+    """View logs from your hosted agent."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _logs():
+        return await client.get_deploy_logs(tail=tail)
+
+    try:
+        result = asyncio.run(_logs())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(result.get("logs", "(no logs)"))
+
+
+@cli.command()
+def undeploy():
+    """Stop and remove your hosted deployment."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    if not click.confirm("Stop and remove your hosted deployment?"):
+        click.echo("Cancelled.")
+        return
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _undeploy():
+        return await client.undeploy()
+
+    try:
+        asyncio.run(_undeploy())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo("Deployment removed.")
+
+
+@cli.group()
+def secrets():
+    """Manage secrets for your hosted agent."""
+    pass
+
+
+@secrets.command("set")
+@click.argument("key")
+@click.argument("value")
+def secrets_set(key: str, value: str):
+    """Set a secret (e.g., arcoa secrets set OPENAI_API_KEY sk-...)."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _set():
+        return await client.set_secret(key, value)
+
+    try:
+        asyncio.run(_set())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Secret '{key}' set. Redeploy for it to take effect.")
+
+
+@secrets.command("list")
+def secrets_list():
+    """List all secrets (keys only)."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _list():
+        return await client.list_secrets()
+
+    try:
+        result = asyncio.run(_list())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    items = result.get("secrets", [])
+    if not items:
+        click.echo("No secrets configured.")
+        return
+
+    for s in items:
+        click.echo(f"  {s['key']} (set {s.get('created_at', 'N/A')[:10]})")
+
+
+@secrets.command("delete")
+@click.argument("key")
+def secrets_delete(key: str):
+    """Delete a secret."""
+    try:
+        config = load_config()
+    except ArcoaConfigError as e:
+        raise click.ClickException(str(e))
+
+    from .exceptions import ArcoaAPIError
+
+    client = ArcoaClient(
+        agent_id=config["agent_id"],
+        private_key=config["private_key"],
+        api_url=config.get("api_url", "https://api.arcoa.ai"),
+    )
+
+    async def _delete():
+        return await client.delete_secret(key)
+
+    try:
+        asyncio.run(_delete())
+    except ArcoaAPIError as e:
+        raise click.ClickException(str(e))
+
+    click.echo(f"Secret '{key}' deleted.")
+
+
+@cli.command("init-template")
+@click.argument("template", default="hello-world")
+def init_template(template: str):
+    """Scaffold a new agent project from a template.
+
+    Available templates: hello-world
+    """
+    import shutil
+    from pathlib import Path
+
+    templates_dir = Path(__file__).parent.parent.parent.parent / "templates"
+    template_path = templates_dir / template
+
+    if not template_path.exists():
+        # Fallback: create inline hello-world
+        if template != "hello-world":
+            raise click.ClickException(
+                f"Unknown template: {template}\n"
+                "  Available: hello-world"
+            )
+
+        target = Path(template)
+        target.mkdir(exist_ok=True)
+
+        (target / "arcoa.yaml").write_text(
+            "name: hello-world\n"
+            "runtime: python:3.13\n"
+            "\n"
+            "skills:\n"
+            "  - id: echo\n"
+            '    description: "Echoes back whatever you send."\n'
+            '    base_price: "0.01"\n'
+            "\n"
+            'cpu: "0.25"\n'
+            "memory_mb: 256\n"
+            "entrypoint: handler.py\n"
+        )
+
+        (target / "handler.py").write_text(
+            '"""Hello World agent — the simplest possible Arcoa agent."""\n'
+            "\n"
+            "\n"
+            "def handle(requirements: dict) -> dict:\n"
+            '    """Process a job and return the result."""\n'
+            "    return {\n"
+            '        "echo": requirements,\n'
+            '        "message": "Hello from Arcoa! Your agent is live.",\n'
+            "    }\n"
+        )
+
+        (target / "requirements.txt").write_text(
+            "# Add your Python dependencies here.\n"
+            "# The arcoa SDK is pre-installed in the runtime.\n"
+        )
+    else:
+        target = Path(template)
+        if target.exists():
+            raise click.ClickException(f"Directory '{template}' already exists")
+        shutil.copytree(template_path, target)
+
+    click.echo(f"Created '{template}/' with:")
+    click.echo("  arcoa.yaml      — agent manifest")
+    click.echo("  handler.py      — your agent logic")
+    click.echo("  requirements.txt — Python dependencies")
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd {template}")
+    click.echo("  arcoa deploy")
+
+
 @cli.group()
 def listing():
     """Manage marketplace listings."""

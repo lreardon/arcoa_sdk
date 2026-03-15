@@ -49,7 +49,7 @@ class ArcoaClient:
     # ------------------------------------------------------------------
 
     async def __aenter__(self) -> "ArcoaClient":
-        self._client = httpx.AsyncClient(base_url=self.api_url)
+        self._client = httpx.AsyncClient(base_url=self.api_url, timeout=30.0)
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -69,17 +69,20 @@ class ArcoaClient:
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         """Send a request and return the parsed JSON response."""
         body = b""
+        is_multipart = "files" in kwargs
+
         if "json" in kwargs:
             import json as _json
             body = _json.dumps(kwargs["json"], separators=(",", ":")).encode()
 
         headers = self._auth_headers(method, path, body)
-        headers["Content-Type"] = "application/json"
+        if not is_multipart:
+            headers["Content-Type"] = "application/json"
 
         if self._client is not None:
             response = await self._client.request(method, path, headers=headers, **kwargs)
         else:
-            async with httpx.AsyncClient(base_url=self.api_url) as client:
+            async with httpx.AsyncClient(base_url=self.api_url, timeout=30.0) as client:
                 response = await client.request(method, path, headers=headers, **kwargs)
 
         if response.status_code >= 400:
@@ -281,8 +284,38 @@ class ArcoaClient:
     # Job lifecycle
     # ------------------------------------------------------------------
 
-    async def propose_job(self, data: dict) -> dict:
-        """POST /jobs — propose a new job."""
+    async def propose_job(
+        self,
+        data: dict | None = None,
+        *,
+        seller_agent_id: str | None = None,
+        listing_id: str | None = None,
+        max_budget: str | None = None,
+        requirements: dict | str | None = None,
+        acceptance_criteria: dict | None = None,
+    ) -> dict:
+        """POST /jobs — propose a new job.
+
+        Either pass ``data`` directly or use keyword arguments::
+
+            await client.propose_job(data={...})
+            await client.propose_job(
+                seller_agent_id="...", max_budget="1.00",
+                requirements={"task": "extract tables"},
+            )
+        """
+        if data is None:
+            data = {}
+            if seller_agent_id is not None:
+                data["seller_agent_id"] = seller_agent_id
+            if listing_id is not None:
+                data["listing_id"] = listing_id
+            if max_budget is not None:
+                data["max_budget"] = max_budget
+            if requirements is not None:
+                data["requirements"] = requirements
+            if acceptance_criteria is not None:
+                data["acceptance_criteria"] = acceptance_criteria
         return await self._request("POST", "/jobs", json=data)
 
     async def get_job(self, job_id: str) -> dict:
@@ -382,3 +415,50 @@ class ArcoaClient:
     async def request_recovery(self, email: str) -> dict:
         """POST /auth/recover — request a key recovery email."""
         return await self._request("POST", "/auth/recover", json={"email": email})
+
+    # ------------------------------------------------------------------
+    # Hosting
+    # ------------------------------------------------------------------
+
+    async def deploy(self, archive_bytes: bytes, region: str = "us-west1") -> dict:
+        """POST /agents/{agent_id}/hosting/deploy — upload and deploy agent code."""
+        import io
+        # Multipart upload
+        files = {"file": ("agent.tar.gz", io.BytesIO(archive_bytes), "application/gzip")}
+        data = {"region": region}
+        return await self._request(
+            "POST", f"/agents/{self.agent_id}/hosting/deploy",
+            files=files, data=data,
+        )
+
+    async def get_deploy_status(self) -> dict:
+        """GET /agents/{agent_id}/hosting/deploy"""
+        return await self._request("GET", f"/agents/{self.agent_id}/hosting/deploy")
+
+    async def undeploy(self) -> dict:
+        """DELETE /agents/{agent_id}/hosting/deploy"""
+        return await self._request("DELETE", f"/agents/{self.agent_id}/hosting/deploy")
+
+    async def get_deploy_logs(self, tail: int = 200) -> dict:
+        """GET /agents/{agent_id}/hosting/logs"""
+        return await self._request(
+            "GET", f"/agents/{self.agent_id}/hosting/logs",
+            params={"tail": tail},
+        )
+
+    async def set_secret(self, key: str, value: str) -> dict:
+        """POST /agents/{agent_id}/hosting/secrets"""
+        return await self._request(
+            "POST", f"/agents/{self.agent_id}/hosting/secrets",
+            json={"key": key, "value": value},
+        )
+
+    async def list_secrets(self) -> dict:
+        """GET /agents/{agent_id}/hosting/secrets"""
+        return await self._request("GET", f"/agents/{self.agent_id}/hosting/secrets")
+
+    async def delete_secret(self, key: str) -> dict:
+        """DELETE /agents/{agent_id}/hosting/secrets/{key}"""
+        return await self._request(
+            "DELETE", f"/agents/{self.agent_id}/hosting/secrets/{key}",
+        )
